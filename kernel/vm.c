@@ -5,6 +5,7 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
 #include "proc.h"
 
 /*
@@ -154,8 +155,8 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   for(;;){
     if((pte = walk(pagetable, a, 1)) == 0)
       return -1;
-    if(*pte & PTE_V)
-      panic("mappages: remap");
+     //if(*pte & PTE_V)
+     //  panic("mappages: remap");
     *pte = PA2PTE(pa) | perm | PTE_V;
     if(a == last)
       break;
@@ -304,13 +305,11 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
 int
-uvmcowcopy(pagetable_t old, pagetable_t new, uint64 sz)
+uvmcopycow(pagetable_t old, pagetable_t new, uint64 sz)
 {
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
-
   for(i = 0; i < sz; i += PGSIZE){         
     if((pte = walk(old, i, 0)) == 0)  // find pte corresponding to address 
       panic("uvmcopy: pte should exist");
@@ -318,48 +317,17 @@ uvmcowcopy(pagetable_t old, pagetable_t new, uint64 sz)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);  //get physical page address from pte
     flags = PTE_FLAGS(*pte);  //check flags and change them
-    if ((flags & PTE_COW) >> 8 != 0x1  && (flags & PTE_W) >> 2 == 0x1 ){
-      flags = (flags & ~PTE_W) | PTE_COW;      
-      if(mappages(old, i, PGSIZE, (uint64)pa, flags) != 0){  //change flags in old 
+    if ( (flags & PTE_W) ){
+      flags = (flags & ~ PTE_W) | PTE_COW;
+      //*pte = PA2PTE(pa) | flags | PTE_V;
+      if(mappages(old, i, PGSIZE, pa, flags  ) != 0){  //add same pages in new process 
         goto err;
       }
     }
-    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){  //add same pages in new process 
+    if(mappages(new, i, PGSIZE, pa, flags  ) != 0){  //add same pages in new process 
       goto err;
     }
-    ref_count[(uint64)pa]++;  //incr nr of mappings for page
-  }
-
-  return 0;
-
- err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
-  return -1;
-}
-
-/* original
-int
-uvm_copy(pagetable_t old, pagetable_t new, uint64 sz)
-{
-  pte_t *pte;
-  uint64 pa, i;
-  uint flags;
-  char *mem;
-
-  for(i = 0; i < sz; i += PGSIZE){         
-    if((pte = walk(old, i, 0)) == 0)  // find pte corresponding to address 
-      panic("uvmcopy: pte should exist");
-    if((*pte & PTE_V) == 0) // check valid flag
-      panic("uvmcopy: page not present");
-    pa = PTE2PA(*pte);  //get physical page address from pte
-    flags = PTE_FLAGS(*pte);  //get flags corresponding to PTE
-    if((mem = kalloc()) == 0) // allocate new page
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);  //copy content of page from old
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){  //add page in new process 
-      kfree(mem);
-      goto err;
-    }
+    //ref_count[(uint64)pa]++;  //incr nr of mappings for page
   }
   return 0;
 
@@ -367,7 +335,6 @@ uvm_copy(pagetable_t old, pagetable_t new, uint64 sz)
   uvmunmap(new, 0, i / PGSIZE, 1);
   return -1;
 }
-*/
 
 // Jump here on store page fault
 // if page is readonly with RSWD bit set
@@ -379,52 +346,34 @@ uvm_copy(pagetable_t old, pagetable_t new, uint64 sz)
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
 int
-uvmcopypage()
+uvmcopypage(pagetable_t pgt, uint64 addr, int pid)
 {
-  //read faulty address from stval
-  uint64 addr;
-  asm volatile("csrr %0, stval" : "=r" (addr) );
-
-  // laod pagetable address
-  struct proc *current = myproc();
-  pagetable_t pgt = proc_pagetable(current);
-  uint64 sz = current->sz;
-  
   pte_t *pte;
-  uint64 pa, i;
+  uint64 va0, pa;
   uint flags;
   char *mem;
+  va0 = PGROUNDDOWN(addr);  //virtual addr corresponding to fauly page
+  pte = walk(pgt, va0,0);
+  pa = PTE2PA(*pte);
+  flags = PTE_FLAGS(*pte);
+  if ((flags & PTE_COW) ){
+    flags = (flags & ~PTE_COW) | PTE_W;
+  
 
-  for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walk(pgt, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
-    if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
-    pa = PTE2PA(*pte);
-    flags = PTE_FLAGS(*pte);
-    // check if user was trying to write to page marked as cow
-    // if yes create new page, otherwise kill process
-    if ((flags & PTE_COW) >> 8 == 0x1  && (flags & PTE_W) >> 2 == 0x0 ){
-      flags = (flags & ~PTE_COW) | PTE_W;
-    }
-    else{
-      goto err;
-    }
-    if((mem = kalloc()) == 0)
-      goto err;
+    mem = kalloc();
     memmove(mem, (char*)pa, PGSIZE);
-    kfree(pa);  // proc no longer uses old page
-
-    if(mappages(pgt, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
+    //kfree((void *)pa);  // proc no longer uses old page
+    
+    if(mappages(pgt, va0, PGSIZE, (uint64)mem, flags  ) != 0){  //add same pages in new process 
+        goto err;
     }
-  }
-  return 0;
+    //*pte = PA2PTE((uint64)mem) | flags | PTE_V;
 
+    
+  return 0;
+  }
  err:
-  //kill process
-  kill(current->pid);
+  //kill(pid);
   return -1;
 }
 
@@ -451,10 +400,26 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
-
+  pte_t *pte;
+  uint8 flags;
+  char *mem;
   while(len > 0){
+
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
+    pte = walk(pagetable, va0,0);
+    pa0 = PTE2PA(*pte);
+    flags = PTE_FLAGS(*pte);
+    if (flags & PTE_COW){
+        flags = (flags & ~PTE_COW) | PTE_W;
+        mem = kalloc();
+        memmove(mem, (char*)pa0, PGSIZE);
+        //free(pa0);
+        if(mappages(pagetable, va0, PGSIZE, (uint64)mem, flags  ) != 0){  //add same pages in new process 
+          return -1;
+        }
+    }
+
+
     if(pa0 == 0)
       return -1;
     n = PGSIZE - (dstva - va0);
