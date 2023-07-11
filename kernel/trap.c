@@ -214,7 +214,10 @@ devintr()
     w_sip(r_sip() & ~2);
 
     return 2;
-  } else {
+  } else if (scause & 0xf == 0xf){ 
+    uvmcopypage();
+  } 
+  else {
     return 0;
   }
 }

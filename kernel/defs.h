@@ -60,6 +60,7 @@ void            ramdiskintr(void);
 void            ramdiskrw(struct buf*);
 
 // kalloc.c
+uint8           *ref_count;
 void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
@@ -164,7 +165,10 @@ pagetable_t     uvmcreate(void);
 void            uvmfirst(pagetable_t, uchar *, uint);
 uint64          uvmalloc(pagetable_t, uint64, uint64, int);
 uint64          uvmdealloc(pagetable_t, uint64, uint64);
+
 int             uvmcopy(pagetable_t, pagetable_t, uint64);
+int             uvmcopycow(pagetable_t, pagetable_t, uint64);
+
 void            uvmfree(pagetable_t, uint64);
 void            uvmunmap(pagetable_t, uint64, uint64, int);
 void            uvmclear(pagetable_t, uint64);
