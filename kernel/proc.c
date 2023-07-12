@@ -15,6 +15,8 @@ struct proc *initproc;
 int nextpid = 1;
 struct spinlock pid_lock;
 
+uint total_tickets = 0;
+
 extern void forkret(void);
 static void freeproc(struct proc *p);
 
@@ -249,6 +251,9 @@ userinit(void)
   safestrcpy(p->name, "initcode", sizeof(p->name));
   p->cwd = namei("/");
 
+  //set priority for first process
+  p->tickets = 100;
+
   p->state = RUNNABLE;
 
   release(&p->lock);
@@ -316,11 +321,18 @@ fork(void)
 
   acquire(&wait_lock);
   np->parent = p;
+  //copy tickets 
+  np->tickets = p->tickets;
+  
+  //increase total number of tickets in system
+  total_tickets += np->tickets; 
+  
   release(&wait_lock);
 
   acquire(&np->lock);
   np->state = RUNNABLE;
   release(&np->lock);
+
 
   return pid;
 }
@@ -446,6 +458,8 @@ scheduler(void)
 {
   struct proc *p;
   struct cpu *c = mycpu();
+  uint random_value = randomrange(0, total_tickets);
+  uint accumulated = 0;
   
   c->proc = 0;
   for(;;){
@@ -455,6 +469,9 @@ scheduler(void)
     for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
       if(p->state == RUNNABLE) {
+        accumulated += p->tickets;
+      }
+      if(p->state == RUNNABLE && random_value < accumulated){
         // Switch to chosen process.  It is the process's job
         // to release its lock and then reacquire it
         // before jumping back to us.
