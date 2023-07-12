@@ -5,8 +5,6 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
-#include "spinlock.h"
-#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -155,8 +153,8 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   for(;;){
     if((pte = walk(pagetable, a, 1)) == 0)
       return -1;
-     //if(*pte & PTE_V)
-     //  panic("mappages: remap");
+    if(*pte & PTE_V)
+      panic("mappages: remap");
     *pte = PA2PTE(pa) | perm | PTE_V;
     if(a == last)
       break;
@@ -298,85 +296,40 @@ uvmfree(pagetable_t pagetable, uint64 sz)
   freewalk(pagetable);
 }
 
-// Given a parent process's page table, 
-// share pages with child's page table.
-// sets RSWD bit in page tables & 
-// write bit to 0
+// Given a parent process's page table, copy
+// its memory into a child's page table.
+// Copies both the page table and the
+// physical memory.
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
 int
-uvmcopycow(pagetable_t old, pagetable_t new, uint64 sz)
+uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  for(i = 0; i < sz; i += PGSIZE){         
-    if((pte = walk(old, i, 0)) == 0)  // find pte corresponding to address 
+
+  for(i = 0; i < sz; i += PGSIZE){
+    if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
-    if((*pte & PTE_V) == 0) // check valid flag
+    if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
-    pa = PTE2PA(*pte);  //get physical page address from pte
-    flags = PTE_FLAGS(*pte);  //check flags and change them
-    if ( (flags & PTE_W) ){
-      flags = (flags & ~ PTE_W) | PTE_COW;
-      //*pte = PA2PTE(pa) | flags | PTE_V;
-      if(mappages(old, i, PGSIZE, pa, flags  ) != 0){  //add same pages in new process 
-        goto err;
-      }
-    }
-    if(mappages(new, i, PGSIZE, pa, flags  ) != 0){  //add same pages in new process 
+    pa = PTE2PA(*pte);
+    flags = PTE_FLAGS(*pte);
+    flags = (flags & (~ PTE_W)) | PTE_COW;
+    *pte = PA2PTE(pa) | flags; 
+    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){
       goto err;
     }
-    //ref_count[(uint64)pa]++;  //incr nr of mappings for page
+    kincr((void *)pa);
   }
   return 0;
+
 
  err:
   uvmunmap(new, 0, i / PGSIZE, 1);
   return -1;
 }
-
-// Jump here on store page fault
-// if page is readonly with RSWD bit set
-// error is caused because of cow mechanism
-// allocate new writeable page and copy
-// page content to it if there is no free
-// memory left or page has other flags set
-// kill process that caused error
-// returns 0 on success, -1 on failure.
-// frees any allocated pages on failure.
-int
-uvmcopypage(pagetable_t pgt, uint64 addr, int pid)
-{
-  pte_t *pte;
-  uint64 va0, pa;
-  uint flags;
-  char *mem;
-  va0 = PGROUNDDOWN(addr);  //virtual addr corresponding to fauly page
-  pte = walk(pgt, va0,0);
-  pa = PTE2PA(*pte);
-  flags = PTE_FLAGS(*pte);
-  if ((flags & PTE_COW) ){
-    flags = (flags & ~PTE_COW) | PTE_W;
-  
-
-    mem = kalloc();
-    memmove(mem, (char*)pa, PGSIZE);
-    //kfree((void *)pa);  // proc no longer uses old page
-    
-    if(mappages(pgt, va0, PGSIZE, (uint64)mem, flags  ) != 0){  //add same pages in new process 
-        goto err;
-    }
-    //*pte = PA2PTE((uint64)mem) | flags | PTE_V;
-
-    
-  return 0;
-  }
- err:
-  //kill(pid);
-  return -1;
-}
-
 
 
 
@@ -399,27 +352,20 @@ uvmclear(pagetable_t pagetable, uint64 va)
 int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
-  uint64 n, va0, pa0;
   pte_t *pte;
-  uint8 flags;
-  char *mem;
+  uint64 n, va0, pa0;
+  uint flags;
+
   while(len > 0){
 
     va0 = PGROUNDDOWN(dstva);
-    pte = walk(pagetable, va0,0);
-    pa0 = PTE2PA(*pte);
+    pte = walk(pagetable, va0, 0);
     flags = PTE_FLAGS(*pte);
-    if (flags & PTE_COW){
-        flags = (flags & ~PTE_COW) | PTE_W;
-        mem = kalloc();
-        memmove(mem, (char*)pa0, PGSIZE);
-        //free(pa0);
-        if(mappages(pagetable, va0, PGSIZE, (uint64)mem, flags  ) != 0){  //add same pages in new process 
-          return -1;
-        }
+    if(flags & PTE_COW){
+      if( copycow(pagetable, va0) == -1)
+        return -1;
     }
-
-
+    pa0 = walkaddr  (pagetable, va0);
     if(pa0 == 0)
       return -1;
     n = PGSIZE - (dstva - va0);
@@ -451,7 +397,6 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
     if(n > len)
       n = len;
     memmove(dst, (void *)(pa0 + (srcva - va0)), n);
-
     len -= n;
     dst += n;
     srcva = va0 + PGSIZE;
@@ -500,4 +445,39 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+
+int copycow(pagetable_t pgt, uint64 addr){
+  pte_t *pte;
+  uint64 va0, pa;
+  uint flags;
+  char *mem;
+  va0 = PGROUNDDOWN(addr);  //virtual addr corresponding to fauly page
+  pte = walk(pgt, va0,0);
+  if (pte == 0)
+    return -1;
+  pa = PTE2PA(*pte);
+  flags = PTE_FLAGS(*pte);
+  if( (flags & PTE_V) == 0 || (flags & PTE_U) == 0)
+    return 0;
+  if ((flags & PTE_COW) ){
+    flags = (flags & ~PTE_COW) | PTE_W;
+
+    mem = kalloc();
+    if (mem == 0)
+      return -1;
+    memmove(mem, (char*)pa, PGSIZE);
+    uvmunmap(pgt,va0,1,1);
+    //kfree((void *)pa);  // proc no longer uses old page
+    
+    if(mappages(pgt, va0, PGSIZE, (uint64)mem, flags  ) != 0){  //add same pages in new process 
+        goto err;
+    }
+     *pte = PA2PTE((uint64)mem) | flags | PTE_V;
+  }
+  return 0;
+ err:
+  //kill(pid);
+  return -1;
 }

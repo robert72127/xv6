@@ -65,21 +65,15 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if (r_scause() == 0xf){
-  //} else if ((scause & 0xd) == 0xd){
+  }else if (r_scause() == 0xf || r_scause() == 0xc ){
     //read faulty address from stval
     uint64 addr = r_stval();
-    
-    // an interrupt will change sepc, scause, and sstatus,
-    // so enable only now that we're done with those registers.
-    intr_on();
-
-    // laod pagetable address
     pagetable_t pgt = p->pagetable;
 
-
-    uvmcopypage(pgt,addr, p->pid);
-
+    if(copycow(pgt,addr) == -1){
+      kill(p->pid);
+    }
+  
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
@@ -87,6 +81,7 @@ usertrap(void)
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     setkilled(p);
   }
+
   if(killed(p))
     exit(-1);
 

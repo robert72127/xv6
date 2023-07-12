@@ -44,8 +44,10 @@
 // the kernel expects there to be RAM
 // for use by the kernel and user pages
 // from physical address 0x80000000 to PHYSTOP.
+#define PGSIZE 4096 // bytes per page
 #define KERNBASE 0x80000000L
 #define PHYSTOP (KERNBASE + 128*1024*1024)
+#define PGCNT (PHYSTOP- KERNBASE) / PGSIZE 
 
 // map the trampoline page to the highest address,
 // in both user and kernel space.
