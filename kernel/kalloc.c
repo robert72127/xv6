@@ -63,7 +63,10 @@ kfree(void *pa)
 {
   struct run *r;
   
+  acquire(&kmem.lock);
   ref_cnt[(uint64)pa / PGSIZE]--;
+  release(&kmem.lock);
+
   if (ref_cnt[(uint64)pa / PGSIZE]){
     return;
   }
