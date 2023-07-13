@@ -4,6 +4,8 @@ struct stat;
 int fork(void);
 int exit(int) __attribute__((noreturn));
 int wait(int*);
+int clone(void(*fcnt)(void *, void*), void*, void*, void *);
+int join(void **);
 int pipe(int*);
 int write(int, const void*, int);
 int read(int, void*, int);
@@ -23,6 +25,7 @@ char* sbrk(int);
 int sleep(int);
 int uptime(void);
 
+
 // ulib.c
 int stat(const char*, struct stat*);
 char* strcpy(char*, const char*);
@@ -39,3 +42,7 @@ void free(void*);
 int atoi(const char*);
 int memcmp(const void *, const void *, uint);
 void *memcpy(void *, const void *, uint);
+
+// pthreaad.c
+int thread_create(void (*)(void *, void *), void *, void *);
+int thread_join();

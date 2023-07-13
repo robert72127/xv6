@@ -325,6 +325,119 @@ fork(void)
   return pid;
 }
 
+// Create a new thread, copying the parent.
+// Sets up child kernel stack to return as if from clone() system call.
+int
+clone(void(*fcnt)(void *, void*), void *arg1, void *arg2, void *stack)
+{
+  int i, pid;
+  struct proc *np;
+  struct proc *p = myproc();
+
+  // Allocate process.
+  if((np = allocproc()) == 0){
+    return -1;
+  }
+
+  // Share memory with parent.
+  np->pagetable = p->pagetable;
+  np->sz = p->sz;
+
+  // copy saved user registers.
+  *(np->trapframe) = *(p->trapframe);
+
+  // Cause clone to return 0 in the child.
+  np->trapframe->a0 = 0;
+
+  // increment reference counts on open file descriptors.
+  for(i = 0; i < NOFILE; i++)
+    if(p->ofile[i])
+      np->ofile[i] = filedup(p->ofile[i]);
+  np->cwd = idup(p->cwd);
+
+  safestrcpy(np->name, p->name, sizeof(p->name));
+
+  pid = np->pid;
+
+  np->trapframe->sp = (uint64)stack;  // child stack pointer
+  np->trapframe->epc = (uint64)fcnt;  // start executing at funciton address
+  //pass arg1 & arg2 to fcnt
+  np->trapframe->s0 = (uint64)arg1;
+  np->trapframe->s1 = (uint64)arg2;
+
+  release(&np->lock);
+
+  acquire(&wait_lock);
+  np->parent = p;
+  release(&wait_lock);
+
+  acquire(&np->lock);
+  np->state = RUNNABLE;
+  release(&np->lock);
+
+  return pid;
+}
+
+// waits for a child thread 
+// that shares the address space  with the calling process to exit.
+int 
+join(void **stack)
+{
+  struct proc *pp;
+  int havekids, pid;
+  struct proc *p = myproc();
+
+  acquire(&wait_lock);
+
+  for(;;){
+    // Scan through table looking for exited children.
+    havekids = 0;
+    for(pp = proc; pp < &proc[NPROC]; pp++){
+      if(pp->parent == p && pp->pagetable == p->pagetable){ // thread not proc
+        // make sure the child isn't still in exit() or swtch().
+        acquire(&pp->lock);
+
+        havekids = 1;
+        if(pp->state == ZOMBIE){
+          // Found one.
+          pid = pp->pid;
+
+          *stack = (void *)pp->trapframe->sp; //set to thread stack
+
+          // free thread
+          kfree((void*)pp->trapframe);
+          pp->trapframe = 0;
+          pp->pagetable = 0;
+          pp->sz = 0;
+          pp->pid = 0;
+          pp->parent = 0;
+          pp->name[0] = 0;
+          pp->chan = 0;
+          pp->killed = 0;
+          pp->xstate = 0;
+          pp->state = UNUSED;
+
+
+          release(&pp->lock);
+          release(&wait_lock);
+          return pid;
+        }
+        release(&pp->lock);
+      }
+    }
+
+    // No point waiting if we don't have any children.
+    if(!havekids || killed(p)){
+      release(&wait_lock);
+      return -1;
+    }
+    
+    // Wait for a child to exit.
+    sleep(p, &wait_lock);  //DOC: wait-sleep
+  }
+}
+
+
 // Pass p's abandoned children to init.
 // Caller must hold wait_lock.
 void
@@ -400,7 +513,7 @@ wait(uint64 addr)
     // Scan through table looking for exited children.
     havekids = 0;
     for(pp = proc; pp < &proc[NPROC]; pp++){
-      if(pp->parent == p){
+      if(pp->parent == p && p->pagetable != pp->pagetable){
         // make sure the child isn't still in exit() or swtch().
         acquire(&pp->lock);
 
