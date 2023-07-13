@@ -258,6 +258,22 @@ userinit(void)
 
   release(&p->lock);
 }
+int settickets(int priority){
+  struct proc *p = myproc();
+
+  if (priority < 1){
+    return -1;
+  }
+
+  total_tickets -= p->tickets;
+  p->tickets = priority;
+  total_tickets += p->tickets;
+
+  return 0;
+
+
+}
+
 
 // Grow or shrink user memory by n bytes.
 // Return 0 on success, -1 on failure.

@@ -9,16 +9,10 @@
 uint64
 sys_settickets(void)
 {
-  struct proc *p = myproc();
   int priority;
 
   argint(0, &priority);
-  if (priority < 1){
-    return -1;
-  }
-
-  p->tickets = priority;
-  return 0;
+  return settickets(priority);
 }
 
 uint64

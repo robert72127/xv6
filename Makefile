@@ -19,8 +19,8 @@ OBJS = \
   $K/syscall.o \
   $K/sysproc.o \
   $K/bio.o \
-  $K/rand.o \
   $K/fs.o \
+  $K/rand.o \
   $K/log.o \
   $K/sleeplock.o \
   $K/file.o \
@@ -171,4 +171,3 @@ qemu: $K/kernel fs.img
 qemu-gdb: $K/kernel .gdbinit fs.img
 	@echo "*** Now run 'gdb' in another window." 1>&2
 	$(QEMU) $(QEMUOPTS) -S $(QEMUGDB)
-
